@@ -1,5 +1,5 @@
-import numpy 
+import numpy as np
 import os 
 import cv2
-import torch 
+import torch
 print("Hello World")
