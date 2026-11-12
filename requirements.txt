@@ -1,0 +1,7 @@
+torch>=2.4
+torchrl>=0.11
+tensordict>=0.11
+vmas>=1.5
+benchmarl>=1.5
+numpy
+opencv-python
