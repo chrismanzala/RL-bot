@@ -9,10 +9,18 @@ Examples:
     python train/train_mappo.py --algo ippo           # independent PPO baseline
     python train/train_mappo.py --n-agents 5 --frames 2000000
     python train/train_mappo.py --quick               # ~10 second smoke test
-    python train/train_mappo.py --no-render           # on a machine without a display
+    python train/train_mappo.py --device cpu          # force CPU even if a GPU is present
+
+By default the script uses a GPU when one is available, and skips evaluation
+videos when there is no display (e.g. over SSH), so it runs as-is on a remote
+GPU server.
 """
 import argparse
+import os
+import sys
 from pathlib import Path
+
+import torch
 
 from benchmarl.algorithms import IppoConfig, MappoConfig
 from benchmarl.environments import VmasTask
@@ -29,29 +37,46 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-agents", type=int, default=3)
     p.add_argument("--frames", type=int, default=1_000_000, help="total environment steps to train for")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--device", default="cpu", help="cpu or cuda")
+    p.add_argument("--device", default="auto", help="auto (GPU if available), cpu, cuda or cuda:N")
     p.add_argument("--wandb", action="store_true", help="also log to Weights & Biases")
-    p.add_argument("--no-render", action="store_true", help="skip evaluation videos (needed on headless servers)")
+    p.add_argument("--no-render", action="store_true", help="skip evaluation videos (automatic when there is no display)")
     p.add_argument("--quick", action="store_true", help="tiny run to check everything works")
     return p.parse_args()
 
 
+def pick_device(requested: str) -> str:
+    if requested == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if requested.startswith("cuda") and not torch.cuda.is_available():
+        sys.exit("--device cuda was requested but PyTorch sees no GPU (check nvidia-smi and the torch build)")
+    return requested
+
+
+def has_display() -> bool:
+    return sys.platform != "linux" or bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def main() -> None:
     args = parse_args()
+    device = pick_device(args.device)
+    render = not args.no_render and has_display()
+    print(f"device: {device}" + (f" ({torch.cuda.get_device_name(device)})" if device.startswith("cuda") else ""))
+    if not render and not args.no_render:
+        print("no display found, skipping evaluation videos")
 
     task = getattr(VmasTask, args.task.upper()).get_from_yaml()
     if "n_agents" in task.config:
         task.config["n_agents"] = args.n_agents
 
     exp = ExperimentConfig.get_from_yaml()
-    exp.sampling_device = exp.train_device = args.device
-    exp.buffer_device = args.device
+    exp.sampling_device = exp.train_device = device
+    exp.buffer_device = device
     exp.max_n_frames = args.frames
     exp.loggers = ["csv", "wandb"] if args.wandb else ["csv"]
     exp.save_folder = str(Path("results").resolve())
     Path(exp.save_folder).mkdir(exist_ok=True)
     exp.checkpoint_at_end = True
-    exp.render = not args.no_render
+    exp.render = render
 
     if args.quick:
         exp.max_n_frames = 12_000
